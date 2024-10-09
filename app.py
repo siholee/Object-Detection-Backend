@@ -1,36 +1,39 @@
-from ariadne import QueryType, make_executable_schema
-from ariadne.asgi import GraphQL
-from starlette.applications import Starlette
-from starlette.middleware.cors import CORSMiddleware
+from flask import Flask, request, jsonify
+from ultralytics import YOLO
+from PIL import Image
+import io
 
-# 쿼리 타입 정의
-query = QueryType()
+app = Flask(__name__)
 
-# 간단한 쿼리 예시
-@query.field("hello")
-def resolve_hello(_, info):
-    return "안녕하세요! GraphQL 서버입니다."
+# Load your custom YOLOv8 model (assuming the model file is located in 'models/logishub.pt')
+model = YOLO('models/logishub.pt')
 
-# GraphQL 스키마 정의
-type_defs = """
-    type Query {
-        hello: String!
-    }
-"""
+@app.route('/detect', methods=['POST'])
+def detect_objects():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in the request'}), 400
 
-# 스키마 생성
-schema = make_executable_schema(type_defs, query)
+    file = request.files['file']
 
-# Starlette 애플리케이션 생성
-app = Starlette()
+    if file.filename == '':
+        return jsonify({'error': 'No file selected for uploading'}), 400
 
-# CORS 설정 (모든 도메인 허용)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    try:
+        image = Image.open(io.BytesIO(file.read()))
+        results = model(image)
 
-# GraphQL 엔드포인트 설정 및 GraphQL Playground 활성화
-app.add_route("/graphql", GraphQL(schema, debug=True))
+        # Extract detection results, filtering only classes learned by the custom model
+        counts = {}
 
-# 애플리케이션 실행
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        for result in results:
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+                class_name = model.names[class_id]  # Get class name using model's names property
+                counts[class_name] = counts.get(class_name, 0) + 1
+
+        return jsonify({'detections': counts})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5001)
